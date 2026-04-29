@@ -1,80 +1,125 @@
 from flask import Flask, request, jsonify, render_template
-import sqlite3
+from pymongo import MongoClient
+from datetime import datetime, time
+from zoneinfo import ZoneInfo
+from dotenv import load_dotenv
+import os
+
+load_dotenv()
 
 app = Flask(__name__)
 
-DB_NAME = "tracker.db"
+IST = ZoneInfo("Asia/Kolkata")
+
+MONGO_URI = os.getenv("MONGO_URI")
+client = MongoClient(MONGO_URI)
+
+db = client["water_tracker"]
+entries = db["entries"]
 
 
-def get_db():
-    conn = sqlite3.connect(DB_NAME)
-    conn.row_factory = sqlite3.Row
-    return conn
+def log(msg):
+    print(f"[{datetime.now(IST).isoformat()}] {msg}")
 
 
 @app.route("/")
 def home():
+    log("Homepage requested")
     return render_template("index.html")
 
 
 @app.route("/add-entry", methods=["POST"])
 def add_entry():
     data = request.json
+
     entry_type = data.get("entry_type")
-    quantity_ml = data.get("quantity_ml")
+    quantity_ml = int(data.get("quantity_ml"))
+    timestamp_str = data.get("timestamp")
 
-    conn = get_db()
-    conn.execute(
-        "INSERT INTO entries (entry_type, quantity_ml) VALUES (?, ?)",
-        (entry_type, quantity_ml),
-    )
-    conn.commit()
-    conn.close()
+    if timestamp_str:
+        timestamp = datetime.fromisoformat(timestamp_str).replace(tzinfo=IST)
+    else:
+        timestamp = datetime.now(IST)
 
-    return jsonify({"message": "Added"})
+    doc = {
+        "entry_type": entry_type,
+        "quantity_ml": quantity_ml,
+        "timestamp": timestamp
+    }
+
+    result = entries.insert_one(doc)
+
+    log(f"Inserted {entry_type} {quantity_ml}ml at {timestamp}")
+
+    return jsonify({"message": "Added", "id": str(result.inserted_id)})
 
 
 @app.route("/daily-stats")
 def daily_stats():
-    conn = get_db()
+    today = datetime.now(IST).date()
 
-    rows = conn.execute("""
-        SELECT
-            strftime('%H:%M', timestamp) as time,
-            entry_type,
-            quantity_ml
-        FROM entries
-        WHERE date(timestamp) = date('now')
-        ORDER BY timestamp
-    """).fetchall()
+    start_of_day = datetime.combine(today, time.min, tzinfo=IST)
+    end_of_day = datetime.combine(today, time.max, tzinfo=IST)
 
-    conn.close()
+    docs = list(entries.find({
+        "timestamp": {
+            "$gte": start_of_day,
+            "$lte": end_of_day
+        }
+    }).sort("timestamp", 1))
 
-    return jsonify([dict(r) for r in rows])
+    result = []
+
+    for d in docs:
+        result.append({
+            "time": d["timestamp"].strftime("%H:%M"),
+            "entry_type": d["entry_type"],
+            "quantity_ml": d["quantity_ml"]
+        })
+
+    log(f"Returned {len(result)} daily stats")
+
+    return jsonify(result)
 
 
 @app.route("/summary")
 def summary():
-    start = request.args.get("start")
-    end = request.args.get("end")
+    start = datetime.fromisoformat(request.args.get("start")).replace(tzinfo=IST)
+    end = datetime.fromisoformat(request.args.get("end")).replace(tzinfo=IST)
 
-    conn = get_db()
+    docs = list(entries.find({
+        "timestamp": {
+            "$gte": start,
+            "$lte": end
+        }
+    }))
 
-    rows = conn.execute("""
-        SELECT entry_type, SUM(quantity_ml) as total
-        FROM entries
-        WHERE timestamp BETWEEN ? AND ?
-        GROUP BY entry_type
-    """, (start, end)).fetchall()
+    water = 0
+    urine = 0
 
-    conn.close()
+    for d in docs:
+        if d["entry_type"] == "water":
+            water += d["quantity_ml"]
+        elif d["entry_type"] == "urine":
+            urine += d["quantity_ml"]
 
-    result = {"water": 0, "urine": 0}
+    log(f"Summary requested: Water={water}, Urine={urine}")
 
-    for row in rows:
-        result[row["entry_type"]] = row["total"]
+    return jsonify({
+        "water": water,
+        "urine": urine
+    })
 
-    return jsonify(result)
+
+@app.route("/clear-all", methods=["POST"])
+def clear_all():
+    result = entries.delete_many({})
+    log(f"Deleted {result.deleted_count} entries")
+
+    return jsonify({
+        "message": "All entries cleared",
+        "deleted_count": result.deleted_count
+    })
 
 
 if __name__ == "__main__":

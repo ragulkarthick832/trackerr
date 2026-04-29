@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Water Tracker</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        body {
+            font-family: Arial;
+            max-width: 420px;
+            margin: auto;
+            padding: 16px;
+        }
+
+        input, button {
+            width: 100%;
+            padding: 12px;
+            margin: 6px 0;
+            font-size: 16px;
+        }
+
+        .section {
+            margin-bottom: 24px;
+        }
+
+        h3 {
+            margin-bottom: 8px;
+        }
+    </style>
+</head>
+<body>
+
+    <h2>Water / Urine Tracker</h2>
+
+    <div class="section">
+        <h3>Add Water</h3>
+        <input id="waterInput" type="number" placeholder="Water in ml">
+        <button onclick="addEntry('water')">Add Water</button>
+    </div>
+
+    <div class="section">
+        <h3>Add Urine</h3>
+        <input id="urineInput" type="number" placeholder="Urine in ml">
+        <button onclick="addEntry('urine')">Add Urine</button>
+    </div>
+
+    <div class="section">
+        <h3>Today's Timeline</h3>
+        <canvas id="trackerChart"></canvas>
+    </div>
+
+    <div class="section">
+        <h3>Custom Range</h3>
+        <input id="startTime" type="datetime-local">
+        <input id="endTime" type="datetime-local">
+        <button onclick="fetchSummary()">Get Summary</button>
+
+        <p id="summaryResult"></p>
+    </div>
+
+<script>
+let chart;
+
+async function addEntry(type) {
+    const input = document.getElementById(type + "Input");
+    const quantity = parseInt(input.value);
+
+    await fetch("/add-entry", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({
+            entry_type: type,
+            quantity_ml: quantity
+        })
+    });
+
+    input.value = "";
+    loadChart();
+}
+
+async function loadChart() {
+    const res = await fetch("/daily-stats");
+    const data = await res.json();
+
+    const labels = data.map(x => x.time);
+    const values = data.map(x => x.quantity_ml);
+    const colors = data.map(x =>
+        x.entry_type === "water" ? "blue" : "green"
+    );
+
+    if (chart) chart.destroy();
+
+    chart = new Chart(document.getElementById("trackerChart"), {
+        type: "line",
+        data: {
+            labels,
+            datasets: [{
+                label: "Daily Intake / Output",
+                data: values,
+                borderColor: "black",
+                pointBackgroundColor: colors,
+                tension: 0.2
+            }]
+        }
+    });
+}
+
+async function fetchSummary() {
+    const start = document.getElementById("startTime").value;
+    const end = document.getElementById("endTime").value;
+
+    const res = await fetch(`/summary?start=${start}&end=${end}`);
+    const data = await res.json();
+
+    document.getElementById("summaryResult").innerText =
+        `Water: ${data.water || 0} ml | Urine: ${data.urine || 0} ml`;
+}
+
+loadChart();
+setInterval(loadChart, 5000);
+</script>
+
+</body>
+</html>
